@@ -1,0 +1,126 @@
+name: Build Library
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+      
+    outputs:
+      date: ${{ steps.date.outputs.date }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y-%m-%d')" >> $GITHUB_OUTPUT
+
+      - name: Create tag
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          TAG=${{ steps.date.outputs.date }}
+          # Avoid failure if tag already exists
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Tag already exists"
+          else
+            git tag "$TAG"
+            git push origin "$TAG"
+          fi
+
+  build-amd64:
+    needs: prepare
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Create build dir
+        run: mkdir -p build/amd64
+
+      - name: Build amd64
+        run: |
+          docker buildx build \
+            --platform linux/amd64 \
+            --load \
+            -t lib_mysqludf_sys:amd64 .
+
+          docker run --rm \
+            -v ${{ github.workspace }}/build/amd64:/build \
+            lib_mysqludf_sys:amd64
+
+      - name: Upload artifact (amd64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: amd64
+          path: build/amd64/
+
+  build-arm64:
+    needs: prepare
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Create build dir
+        run: mkdir -p build/arm64
+
+      - name: Build arm64
+        run: |
+          docker buildx build \
+            --platform linux/arm64 \
+            --load \
+            -t lib_mysqludf_sys:arm64 .
+
+          docker run --rm \
+            -v ${{ github.workspace }}/build/arm64:/build \
+            lib_mysqludf_sys:arm64
+
+      - name: Upload artifact (arm64)
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64
+          path: build/arm64/
+
+  release:
+    needs: [prepare, build-amd64, build-arm64]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: amd64
+          path: build/amd64
+
+      - name: Download arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: arm64
+          path: build/arm64
+
+      - name: Verify structure
+        run: ls -R build
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.date }}
+          name: Release ${{ needs.prepare.outputs.date }}
+          files: build/**/*
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
